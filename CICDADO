@@ -1,0 +1,269 @@
+# azure-pipelines.yml
+
+trigger:
+  branches:
+    include:
+      - development
+      - uat
+      - production
+
+pr:
+  branches:
+    include:
+      - '*'
+
+variables:
+  # Azure resource variables
+  azureSubscription: 'free trail'
+  resourceGroupName: 'your-resource-group'
+  aksClusterName: 'your-aks-cluster'
+  containerRegistryConnection: '62a22608-1e1a-4dc9-af79-738c930tf55d'
+  containerRepository: 'demoreg.azurecr.io'
+
+  # Docker image variables
+  dockerfilePath: 'path/to/your/Dockerfile'
+  dockerImageTag: $(Build.BuildId)
+
+  # Helm chart variables
+  helmChartPath: 'path/to/your/helm-chart'
+  helmReleaseName: 'your-release-name'
+
+stages:
+  # ... (rest of the pipeline stages)
+
+  - stage: Dockerize
+    displayName: 'Build and Push Docker Image'
+    jobs:
+      - job: DockerizeJob
+        displayName: 'Dockerize Job'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: Docker@2
+            displayName: 'Build and Push Docker Image'
+            inputs:
+              command: 'buildAndPush'
+              containerRegistry: $(containerRegistryConnection)
+              repository: $(containerRepository)
+              dockerfile: $('path/to/your/Dockerfile')
+              tags: |
+                $(Build.BuildId)
+
+  - stage: DevelopmentDeployment
+    displayName: 'Development Deployment'
+    dependsOn: Dockerize
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/development'))
+    jobs:
+      - job: DevelopmentDeploymentJob
+        displayName: 'Development Deployment Job'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Login to Azure'
+            inputs:
+              azureSubscription: $(azureSubscription)
+              scriptType: 'pscore'
+              scriptLocation: 'inlineScript'
+              inlineScript: 'az login'
+
+          - task: AzureCLI@2
+            displayName: 'Create AKS cluster'
+            inputs:
+              azureSubscription: $(azureSubscription)
+              scriptType: 'pscore'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az aks create --resource-group $(resourceGroupName) --name $(aksClusterName) --node-count 1 --enable-addons monitoring --generate-ssh-keys
+
+          - task: HelmInstaller@1
+            displayName: 'Install Helm'
+            inputs:
+              helmVersionToInstall: 'latest'
+
+          - task: HelmDeploy@0
+            displayName: 'Deploy application to AKS'
+            inputs:
+              connectionType: 'Azure Resource Manager'
+              azureSubscriptionEndpoint: $(azureSubscription)
+              azureResourceGroup: $(resourceGroupName)
+              kubernetesCluster: $(aksClusterName)
+              command: 'upgrade'
+              chartType: 'FilePath'
+              chartPath: $(helmChartPath)
+              releaseName: $(helmReleaseName)
+              waitForExecution: true
+
+          - task: AzureCLI@2
+            displayName: 'Get AKS credentials'
+            inputs:
+              azureSubscription: $(azureSubscription)
+              scriptType: 'pscore'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az aks get-credentials --resource-group $(resourceGroupName) --name $(aksClusterName) --overwrite-existing
+
+          - task: HelmUpgrade@0
+            displayName: 'Configure Nginx Ingress Controller'
+            inputs:
+              connectionType: 'Kubernetes Service Connection'
+              kubernetesServiceEndpoint: 'your-kubernetes-connection'
+              namespace: 'your-namespace'
+              command: 'upgrade'
+              chartType: 'repo'
+              chartName: 'nginx-stable/nginx-ingress'
+              releaseName: 'nginx-ingress'
+              waitForExecution: true
+
+          - task: KubernetesManifest@0
+            displayName: 'Create Nginx Ingress Route'
+            inputs:
+              connectionType: 'Kubernetes Service Connection'
+              kubernetesServiceEndpoint: 'your-kubernetes-connection'
+              namespace: 'your-namespace'
+              manifests: |
+                apiVersion: networking.k8s.io/v1
+                kind: Ingress
+                metadata:
+                  name: your-ingress-name
+                  annotations:
+                    kubernetes.io/ingress.class: nginx
+                spec:
+                  rules:
+                    - http:
+                        paths:
+                          - path: /
+                            pathType: Prefix
+                            backend:
+                              service:
+                                name: your-service-name
+                                port:
+                                  number: your-service-port
+
+
+  - stage: UATDeployment
+    displayName: 'UAT Deployment'
+    dependsOn: Dockerize
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/uat'))
+    jobs:
+      - job: UATDeploymentJob
+        displayName: 'UAT Deployment Job'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Login to Azure'
+            inputs:
+              azureSubscription: $(azureSubscription)
+              scriptType: 'pscore'
+              scriptLocation: 'inlineScript'
+              inlineScript: 'az login'
+
+          # Steps to deploy to the UAT server using AKS and Nginx
+          # Similar to the DevelopmentDeployment stage.
+
+  - stage: ProductionDeployment
+    displayName: 'Production Deployment'
+    dependsOn: Dockerize
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/production'))
+    jobs:
+      - job: ProductionDeploymentJob
+        displayName: 'Production Deployment Job'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Login to Azure'
+            inputs:
+              azureSubscription: $(azureSubscription)
+              scriptType: 'pscore'
+              scriptLocation: 'inlineScript'
+              inlineScript: 'az login'
+
+          # Steps to deploy to the production server using AKS and Nginx
+          # Similar to the DevelopmentDeployment stage.
+
+  - stage: InfrastructureSetup
+    displayName: 'Infrastructure Setup'
+    dependsOn: Dockerize
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/production'))
+    jobs:
+      - job: InfrastructureSetupJob
+        displayName: 'Infrastructure Setup Job'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Login to Azure'
+            inputs:
+              azureSubscription: $(azureSubscription)
+              scriptType: 'pscore'
+              scriptLocation: 'inlineScript'
+              inlineScript: 'az login'
+
+          - task: AzureCLI@2
+            displayName: 'Create PostgreSQL server on private VNet'
+            inputs:
+              azureSubscription: $(azureSubscription)
+              scriptType: 'pscore'
+              scriptLocation: 'inlineScript'
+              inlineScript:
+resourceGroupName="your-resource-group-name"
+serverName="your-postgresql-server-name"
+location="your-location"
+adminUsername="your-admin-username"
+adminPassword="your-admin-password"
+
+# Create a resource group
+az group create --name $resourceGroupName --location $location
+
+# Create a PostgreSQL server
+az postgres server create \
+  --resource-group $resourceGroupName \
+  --name $serverName \
+  --location $location \
+  --admin-user $adminUsername \
+  --admin-password $adminPassword \
+  --sku-name GP_Gen5_2
+
+# Create a private VNet and subnet
+vnetName="your-vnet-name"
+subnetName="your-subnet-name"
+vnetAddressPrefix="10.0.0.0/16"
+subnetAddressPrefix="10.0.0.0/24"
+
+az network vnet create \
+  --resource-group $resourceGroupName \
+  --name $vnetName \
+  --address-prefix $vnetAddressPrefix \
+  --subnet-name $subnetName \
+  --subnet-prefix $subnetAddressPrefix
+
+# Create a private endpoint for PostgreSQL server
+endpointName="your-private-endpoint-name"
+az network private-endpoint create \
+  --resource-group $resourceGroupName \
+  --name $endpointName \
+  --vnet-name $vnetName \
+  --subnet $subnetName \
+  --private-connection-resource-id $(az postgres server show --resource-group $resourceGroupName --name $serverName --query 'id' --output tsv) \
+  --group-id "Microsoft.DBforPostgreSQL/servers" \
+  --connection-name "your-connection-name"
+
+# Configure firewall rules to allow traffic only from the VNet
+az postgres server firewall-rule create \
+  --resource-group $resourceGroupName \
+  --server $serverName \
+  --name "AllowAzureServices" \
+  --start-ip-address 0.0.0.0 \
+  --end-ip-address 0.0.0.0
+
+az postgres server firewall-rule create \
+  --resource-group $resourceGroupName \
+  --server $serverName \
+  --name "AllowVNet" \
+  --start-ip-address 10.0.0.0 \
+  --end-ip-address 10.0.0.255
+
+
+	   
